@@ -38,15 +38,14 @@ def create_pipeline_and_queues():
     # Color camera
     cam_rgb = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
 
-    # Stereo depth
+    # Stereo depth - don't align to RGB (causes width issues)
     stereo = pipeline.create(dai.node.StereoDepth)
     stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(True)
     stereo.setSubpixel(True)
     stereo.setRectification(True)
-    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-    # Width must be multiple of 16
-    stereo.setOutputSize(1280, 800)
+    # Use left camera alignment (native stereo res)
+    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_B)
 
     # Lower confidence for black surfaces
     stereo.initialConfig.setConfidenceThreshold(150)
