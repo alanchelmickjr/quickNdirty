@@ -29,6 +29,15 @@ colorMap[0] = [0, 0, 0]  # to make zero-disparity pixels black
 
 with pipeline:
     pipeline.start()
+
+    # Enable IR laser for better stereo matching
+    try:
+        device = pipeline.getDefaultDevice()
+        device.setIrLaserDotProjectorIntensity(0.8)
+        print("IR laser enabled at 80%")
+    except Exception as e:
+        print(f"IR: {e}")
+
     print("Stereo depth running - press Q to quit")
     maxDisparity = 1
     while pipeline.isRunning():
