@@ -38,18 +38,17 @@ def create_pipeline_and_queues():
     # Color camera
     cam_rgb = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
 
-    # Stereo depth - don't align to RGB (causes width issues)
+    # Stereo depth
     stereo = pipeline.create(dai.node.StereoDepth)
     stereo.setLeftRightCheck(True)
-    stereo.setExtendedDisparity(True)
-    stereo.setSubpixel(True)
+    stereo.setExtendedDisparity(True)  # closer range
+    stereo.setSubpixel(False)  # disable - causes disparity overflow with extended
     stereo.setRectification(True)
-    # Use left camera alignment (native stereo res)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_B)
 
-    # Lower confidence for black surfaces
+    # Lower confidence for black surfaces, no median (causes issues with extended)
     stereo.initialConfig.setConfidenceThreshold(150)
-    stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
+    stereo.initialConfig.setMedianFilter(dai.MedianFilter.MEDIAN_OFF)
 
     # Point cloud
     pointcloud = pipeline.create(dai.node.PointCloud)
