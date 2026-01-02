@@ -1,27 +1,44 @@
 #!/usr/bin/env python3
 """
-Step 1: Camera with autofocus
+Step 2: Stereo depth - stock example from depthai-core/examples/python/StereoDepth/stereo.py
 """
 
 import cv2
 import depthai as dai
+import numpy as np
 
-with dai.Pipeline() as pipeline:
-    cam = pipeline.create(dai.node.Camera).build()
+pipeline = dai.Pipeline()
+monoLeft = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
+monoRight = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
+stereo = pipeline.create(dai.node.StereoDepth)
 
-    # Set autofocus
-    cam.initialControl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+# Linking
+monoLeftOut = monoLeft.requestFullResolutionOutput()
+monoRightOut = monoRight.requestFullResolutionOutput()
+monoLeftOut.link(stereo.left)
+monoRightOut.link(stereo.right)
 
-    videoQueue = cam.requestOutput((640, 400)).createOutputQueue()
+stereo.setRectification(True)
+stereo.setExtendedDisparity(True)
+stereo.setLeftRightCheck(True)
 
+disparityQueue = stereo.disparity.createOutputQueue()
+
+colorMap = cv2.applyColorMap(np.arange(256, dtype=np.uint8), cv2.COLORMAP_JET)
+colorMap[0] = [0, 0, 0]  # to make zero-disparity pixels black
+
+with pipeline:
     pipeline.start()
-    print("Camera running - press Q to quit, F to refocus")
-
+    print("Stereo depth running - press Q to quit")
+    maxDisparity = 1
     while pipeline.isRunning():
-        videoIn = videoQueue.get()
-        frame = videoIn.getCvFrame()
-        cv2.imshow("video", frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        disparity = disparityQueue.get()
+        assert isinstance(disparity, dai.ImgFrame)
+        npDisparity = disparity.getFrame()
+        maxDisparity = max(maxDisparity, np.max(npDisparity))
+        colorizedDisparity = cv2.applyColorMap(((npDisparity / maxDisparity) * 255).astype(np.uint8), colorMap)
+        cv2.imshow("disparity", colorizedDisparity)
+        key = cv2.waitKey(1)
+        if key == ord('q'):
+            pipeline.stop()
             break
