@@ -49,9 +49,9 @@ def create_pipeline():
     color.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
     color.setFps(30)
 
-    # Stereo depth - HIGH_ACCURACY for scanning
+    # Stereo depth - HIGH_DENSITY for better coverage on detailed objects
     stereo = pipeline.create(dai.node.StereoDepth)
-    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_ACCURACY)
+    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
     stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
     stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(True)  # closer objects
