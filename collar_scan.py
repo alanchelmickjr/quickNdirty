@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-Step 1: Just get camera working
-Stock example from depthai-core/examples/python/Camera/camera_output.py
+Step 1: Camera with autofocus
 """
 
 import cv2
 import depthai as dai
 
-# Create pipeline
 with dai.Pipeline() as pipeline:
-    # Define source and output
     cam = pipeline.create(dai.node.Camera).build()
-    videoQueue = cam.requestOutput((640,400)).createOutputQueue()
 
-    # Connect to device and start pipeline
+    # Set autofocus
+    cam.initialControl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
+
+    videoQueue = cam.requestOutput((640, 400)).createOutputQueue()
+
     pipeline.start()
-    print("Camera running - press Q to quit")
+    print("Camera running - press Q to quit, F to refocus")
+
     while pipeline.isRunning():
         videoIn = videoQueue.get()
-        assert isinstance(videoIn, dai.ImgFrame)
-        cv2.imshow("video", videoIn.getCvFrame())
+        frame = videoIn.getCvFrame()
+        cv2.imshow("video", frame)
 
-        if cv2.waitKey(1) == ord("q"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
             break
