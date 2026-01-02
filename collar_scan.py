@@ -12,7 +12,7 @@ Usage:
 import depthai as dai
 import numpy as np
 import cv2
-import open3d as o3d
+from plyfile import PlyData, PlyElement
 from pathlib import Path
 import time
 import argparse
@@ -112,11 +112,15 @@ def capture_frame(device, frame_num):
     valid_pixels = np.sum(depth_img > 0)
 
     # Save point cloud
-    points = pcl_data.getPoints().astype(np.float64)
+    points = pcl_data.getPoints().astype(np.float32)
     if len(points) > 0:
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-        o3d.io.write_point_cloud(str(OUTPUT_DIR / f"cloud_{frame_num:03d}.ply"), pcd)
+        # Create structured array for plyfile
+        vertices = np.array(
+            [(p[0], p[1], p[2]) for p in points],
+            dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')]
+        )
+        el = PlyElement.describe(vertices, 'vertex')
+        PlyData([el]).write(str(OUTPUT_DIR / f"cloud_{frame_num:03d}.ply"))
         print(f"Frame {frame_num}: {len(points):,} points | {valid_pixels:,} valid depth px")
         return len(points)
     else:
