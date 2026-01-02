@@ -45,6 +45,8 @@ def create_pipeline_and_queues():
     stereo.setSubpixel(True)
     stereo.setRectification(True)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+    # Width must be multiple of 16
+    stereo.setOutputSize(1280, 800)
 
     # Lower confidence for black surfaces
     stereo.initialConfig.setConfidenceThreshold(150)
@@ -53,7 +55,7 @@ def create_pipeline_and_queues():
     # Point cloud
     pointcloud = pipeline.create(dai.node.PointCloud)
 
-    # Link cameras to stereo
+    # Link cameras to stereo (use 1280x800 - multiple of 16)
     cam_left.requestOutput((1280, 800)).link(stereo.left)
     cam_right.requestOutput((1280, 800)).link(stereo.right)
 
@@ -71,14 +73,26 @@ def create_pipeline_and_queues():
 def enable_ir_projector(pipeline):
     """Enable IR laser dot projector for active stereo"""
     try:
-        device = pipeline.getDevice()
-        device.setIrLaserDotProjectorIntensity(IR_LASER_INTENSITY)
-        device.setIrFloodLightIntensity(0.0)
-        print(f"IR laser dot projector: {IR_LASER_INTENSITY*100:.0f}%")
-        return True
+        # v3 API - get device from pipeline's default device
+        devices = pipeline.getDevices()
+        if devices:
+            device = devices[0]
+            device.setIrLaserDotProjectorIntensity(IR_LASER_INTENSITY)
+            device.setIrFloodLightIntensity(0.0)
+            print(f"IR laser dot projector: {IR_LASER_INTENSITY*100:.0f}%")
+            return True
+    except AttributeError:
+        # Try alternative method
+        try:
+            pipeline.getDefaultDevice().setIrLaserDotProjectorIntensity(IR_LASER_INTENSITY)
+            pipeline.getDefaultDevice().setIrFloodLightIntensity(0.0)
+            print(f"IR laser dot projector: {IR_LASER_INTENSITY*100:.0f}%")
+            return True
+        except Exception as e2:
+            print(f"IR projector: {e2}")
     except Exception as e:
         print(f"IR projector not available: {e}")
-        return False
+    return False
 
 
 def capture_frame(queues, frame_num):
