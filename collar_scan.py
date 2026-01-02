@@ -46,8 +46,8 @@ def create_pipeline_and_queues():
     stereo.setRectification(True)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_B)
 
-    # Lower confidence for black surfaces, no median (causes issues with extended)
-    stereo.initialConfig.setConfidenceThreshold(150)
+    # Very low confidence for black surfaces - accept almost anything
+    stereo.initialConfig.setConfidenceThreshold(50)
     stereo.initialConfig.setMedianFilter(dai.MedianFilter.MEDIAN_OFF)
 
     # Point cloud
