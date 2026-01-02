@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Quick black aluminum collar scan attempt
-OAK-D + turntable + bright lights + prayer
+OAK-D S3 Pro 3D Scanner for black aluminum collar
+With IR dot projector for active stereo on low-texture surfaces
 
 Usage:
   python collar_scan.py              # GUI mode (requires display)
-  python collar_scan.py --headless   # CLI-only mode (no display needed)
+  python collar_scan.py --headless   # CLI-only mode
   python collar_scan.py --auto 36    # Auto-capture N frames
 """
 
@@ -21,51 +21,58 @@ import sys
 OUTPUT_DIR = Path("collar_scans")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# IR laser intensity for active stereo (0.0 to 1.0)
+# Higher = better for black/textureless surfaces
+IR_LASER_INTENSITY = 0.8
+IR_FLOOD_INTENSITY = 0.0  # flood not needed for scanning
+
+
 def create_pipeline():
     pipeline = dai.Pipeline()
 
-    # Mono cameras - max res for stereo
+    # Left mono camera
     mono_left = pipeline.create(dai.node.MonoCamera)
-    mono_right = pipeline.create(dai.node.MonoCamera)
     mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
-    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
     mono_left.setCamera("left")
-    mono_right.setCamera("right")
+    mono_left.setFps(30)
 
-    # Color for texture reference
+    # Right mono camera
+    mono_right = pipeline.create(dai.node.MonoCamera)
+    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_800_P)
+    mono_right.setCamera("right")
+    mono_right.setFps(30)
+
+    # Color camera for texture reference
     color = pipeline.create(dai.node.ColorCamera)
     color.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     color.setIspScale(1, 2)
     color.setColorOrder(dai.ColorCameraProperties.ColorOrder.RGB)
+    color.setFps(30)
 
-    # Stereo depth - aggressive settings for black surfaces
+    # Stereo depth - HIGH_ACCURACY for scanning
     stereo = pipeline.create(dai.node.StereoDepth)
-    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DETAIL)
+    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_ACCURACY)
     stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
     stereo.setLeftRightCheck(True)
-    stereo.setExtendedDisparity(True)  # closer min distance
-    stereo.setSubpixel(True)
+    stereo.setExtendedDisparity(True)  # closer objects
+    stereo.setSubpixel(True)  # sub-pixel accuracy
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+    stereo.setRectifyEdgeFillColor(0)
 
-    # Lower confidence threshold - accept more questionable depth
-    stereo.initialConfig.setConfidenceThreshold(100)  # default 230, lower = more permissive
+    # Lower confidence threshold for black surfaces (default ~230)
+    stereo.initialConfig.setConfidenceThreshold(150)
 
-    # Post-processing
-    config = stereo.initialConfig.get()
-    config.postProcessing.speckleFilter.enable = True
-    config.postProcessing.speckleFilter.speckleRange = 60
-    config.postProcessing.temporalFilter.enable = True
-    config.postProcessing.spatialFilter.enable = True
-    config.postProcessing.spatialFilter.holeFillingRadius = 2
-    config.postProcessing.decimationFilter.decimationFactor = 1  # no decimation
-    stereo.initialConfig.set(config)
-
-    # Point cloud node
+    # Point cloud generation
     pointcloud = pipeline.create(dai.node.PointCloud)
 
-    # Links
+    # Sync node for aligned outputs
+    sync = pipeline.create(dai.node.Sync)
+
+    # Link cameras to stereo
     mono_left.out.link(stereo.left)
     mono_right.out.link(stereo.right)
+
+    # Link depth to point cloud
     stereo.depth.link(pointcloud.inputDepth)
 
     # Outputs
@@ -83,13 +90,25 @@ def create_pipeline():
 
     return pipeline
 
-def capture_frame(device, frame_num):
-    """Capture single frame: depth image + point cloud + rgb"""
-    q_pcl = device.getOutputQueue("pcl", maxSize=4, blocking=False)
-    q_depth = device.getOutputQueue("depth", maxSize=4, blocking=False)
-    q_rgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
-    # Flush old frames
+def enable_ir_projector(device):
+    """Enable IR laser dot projector for active stereo (OAK-D Pro/S3 Pro)"""
+    try:
+        device.setIrLaserDotProjectorIntensity(IR_LASER_INTENSITY)
+        device.setIrFloodLightIntensity(IR_FLOOD_INTENSITY)
+        print(f"IR laser dot projector: {IR_LASER_INTENSITY*100:.0f}%")
+        return True
+    except Exception as e:
+        print(f"IR projector not available: {e}")
+        print("(This device may not have active stereo hardware)")
+        return False
+
+
+def capture_frame(queues, frame_num):
+    """Capture single frame: depth + point cloud + rgb"""
+    q_pcl, q_depth, q_rgb = queues
+
+    # Let new frames arrive
     time.sleep(0.3)
 
     pcl_data = q_pcl.get()
@@ -111,10 +130,9 @@ def capture_frame(device, frame_num):
     # Get valid depth pixel count
     valid_pixels = np.sum(depth_img > 0)
 
-    # Save point cloud
+    # Save point cloud as PLY
     points = pcl_data.getPoints().astype(np.float32)
     if len(points) > 0:
-        # Create structured array for plyfile
         vertices = np.array(
             [(p[0], p[1], p[2]) for p in points],
             dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')]
@@ -127,8 +145,9 @@ def capture_frame(device, frame_num):
         print(f"Frame {frame_num}: NO POINTS - black hole detected ({valid_pixels:,} depth px)")
         return 0
 
-def run_headless(device, num_frames, delay):
-    """Headless CLI mode - auto-capture with manual turntable rotation"""
+
+def run_headless(queues, num_frames, delay):
+    """Headless CLI mode"""
     print(f"\nHeadless mode: capturing {num_frames} frames")
     print(f"Rotate turntable {360/num_frames:.1f}° between each capture\n")
 
@@ -137,7 +156,7 @@ def run_headless(device, num_frames, delay):
 
     for i in range(num_frames):
         print(f"\n--- Frame {i+1}/{num_frames} ---")
-        pts = capture_frame(device, frame_num)
+        pts = capture_frame(queues, frame_num)
         total_points += pts
         frame_num += 1
 
@@ -146,23 +165,21 @@ def run_headless(device, num_frames, delay):
             try:
                 input()
             except EOFError:
-                # If running non-interactively, use delay
-                print(f"  (waiting {delay}s for rotation...)")
+                print(f"  (waiting {delay}s...)")
                 time.sleep(delay)
 
     return frame_num, total_points
 
-def run_gui(device):
+
+def run_gui(device, queues):
     """GUI mode with live preview"""
+    q_pcl, q_depth, q_rgb = queues
     frame_num = 0
     total_points = 0
-
-    q_depth = device.getOutputQueue("depth", maxSize=4, blocking=False)
 
     print("\nREADY - position collar, press SPACE to capture")
 
     while True:
-        # Show live depth preview
         depth_frame = q_depth.tryGet()
         if depth_frame is not None:
             depth_img = depth_frame.getFrame()
@@ -171,26 +188,29 @@ def run_gui(device):
                 cv2.COLORMAP_JET
             )
             valid_pixels = np.sum(depth_img > 0)
-            cv2.putText(depth_vis, f"Valid depth: {valid_pixels:,}px",
+            cv2.putText(depth_vis, f"Valid: {valid_pixels:,}px",
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
-            cv2.imshow("Depth Preview (SPACE=capture, Q=quit, A=auto-36)", depth_vis)
+            cv2.putText(depth_vis, f"Frame: {frame_num} | Total pts: {total_points:,}",
+                       (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+            cv2.imshow("Depth (SPACE=capture, Q=quit, A=auto-36)", depth_vis)
 
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord(' '):
-            pts = capture_frame(device, frame_num)
+            pts = capture_frame(queues, frame_num)
             total_points += pts
             frame_num += 1
 
         elif key == ord('a'):
-            print("\nAuto-capture mode - rotate turntable 10° between captures")
+            print("\nAuto-capture: 36 frames at 10° intervals")
             for i in range(36):
                 print(f"\n--- Frame {i+1}/36 ---")
-                pts = capture_frame(device, frame_num)
+                pts = capture_frame(queues, frame_num)
                 total_points += pts
                 frame_num += 1
-                print("Rotate turntable 10°, press ENTER...")
-                input()
+                if i < 35:
+                    print("Rotate 10°, press ENTER...")
+                    input()
             print("\nAuto-capture complete!")
 
         elif key == ord('q'):
@@ -199,83 +219,90 @@ def run_gui(device):
     cv2.destroyAllWindows()
     return frame_num, total_points
 
+
 def print_results(frame_num, total_points):
-    """Print scan results summary"""
+    """Print scan results"""
     print("\n" + "=" * 50)
     print("RESULTS")
     print("=" * 50)
-    print(f"Frames captured: {frame_num}")
+    print(f"Frames: {frame_num}")
     print(f"Total points: {total_points:,}")
     print(f"Avg points/frame: {total_points//max(frame_num,1):,}")
-    print(f"\nFiles saved to: {OUTPUT_DIR.absolute()}")
+    print(f"\nOutput: {OUTPUT_DIR.absolute()}")
 
     if frame_num > 0 and total_points < 10000 * frame_num:
-        print("\n⚠️  LOW POINT COUNT - black surface eating your photons")
-        print("   Options:")
-        print("   1. AESUB spray (best)")
-        print("   2. Baby powder (ghetto but works)")
-        print("   3. Chalk spray")
-        print("   4. Adjust lighting angles")
+        print("\nLOW POINT COUNT - suggestions:")
+        print("  1. Increase IR laser intensity (edit IR_LASER_INTENSITY)")
+        print("  2. Apply scanning spray/powder to surface")
+        print("  3. Improve lighting (reduce ambient IR)")
+        print("  4. Move object closer to camera")
+
 
 def main():
-    parser = argparse.ArgumentParser(description="OAK-D 3D Scanner for black aluminum collar")
-    parser.add_argument("--headless", action="store_true", help="Run without GUI (CLI only)")
-    parser.add_argument("--auto", type=int, metavar="N", help="Auto-capture N frames (implies --headless)")
-    parser.add_argument("--delay", type=float, default=3.0, help="Delay between auto captures (default: 3s)")
+    parser = argparse.ArgumentParser(description="OAK-D S3 Pro 3D Scanner")
+    parser.add_argument("--headless", action="store_true", help="CLI mode (no GUI)")
+    parser.add_argument("--auto", type=int, metavar="N", help="Auto-capture N frames")
+    parser.add_argument("--delay", type=float, default=3.0, help="Delay between captures")
+    parser.add_argument("--ir", type=float, default=0.8, help="IR laser intensity 0.0-1.0")
     args = parser.parse_args()
+
+    global IR_LASER_INTENSITY
+    IR_LASER_INTENSITY = max(0.0, min(1.0, args.ir))
 
     headless = args.headless or args.auto is not None
     num_frames = args.auto or 36
 
     print("=" * 50)
-    print("BLACK ALUMINUM COLLAR SCAN")
+    print("OAK-D S3 PRO 3D SCANNER")
     print("=" * 50)
     print(f"Output: {OUTPUT_DIR.absolute()}")
-    print(f"Mode: {'Headless CLI' if headless else 'GUI with preview'}")
+    print(f"Mode: {'Headless' if headless else 'GUI'}")
+    print(f"IR Laser: {IR_LASER_INTENSITY*100:.0f}%")
 
     if not headless:
         print("\nControls:")
         print("  SPACE - capture frame")
-        print("  Q     - quit and show results")
-        print("  A     - auto-capture 36 frames (10° intervals)")
+        print("  A     - auto-capture 36 frames")
+        print("  Q     - quit")
     print()
 
-    # Check for available devices first
+    # Check for devices
     devices = dai.Device.getAllAvailableDevices()
     if not devices:
-        print("\n❌ ERROR: No OAK-D camera detected!")
+        print("\nERROR: No OAK-D camera detected!")
         print("\nTroubleshooting:")
-        print("  1. Check USB connection")
-        print("  2. Try different USB port (USB3 preferred)")
-        print("  3. Check udev rules: https://docs.luxonis.com/en/latest/pages/troubleshooting/")
-        print("  4. If in Docker, add: -v /dev/bus/usb:/dev/bus/usb --device-cgroup-rule='c 189:* rmw'")
+        print("  1. Check USB connection (USB3 preferred)")
+        print("  2. Try different USB port")
+        print("  3. macOS: check System Preferences > Security")
+        print("  4. Linux: check udev rules")
         sys.exit(1)
+
+    print(f"Found {len(devices)} device(s)")
 
     pipeline = create_pipeline()
 
-    try:
-        with dai.Device(pipeline) as device:
-            print(f"Device: {device.getDeviceName()}")
-            print("Warming up...")
-            time.sleep(2)
+    with dai.Device(pipeline) as device:
+        print(f"Connected: {device.getDeviceName()}")
 
-            if headless:
-                frame_num, total_points = run_headless(device, num_frames, args.delay)
-            else:
-                frame_num, total_points = run_gui(device)
+        # Enable IR projector for active stereo
+        enable_ir_projector(device)
 
-            print_results(frame_num, total_points)
+        print("Warming up...")
+        time.sleep(2)
 
-    except RuntimeError as e:
-        if "No DepthAI device found" in str(e) or "No available devices" in str(e):
-            print("\n❌ ERROR: No OAK-D camera detected!")
-            print("\nTroubleshooting:")
-            print("  1. Check USB connection")
-            print("  2. Try different USB port (USB3 preferred)")
-            print("  3. Check udev rules: https://docs.luxonis.com/en/latest/pages/troubleshooting/")
-            print("  4. If in Docker, add: -v /dev/bus/usb:/dev/bus/usb --device-cgroup-rule='c 189:* rmw'")
-            sys.exit(1)
-        raise
+        # Create output queues
+        q_pcl = device.getOutputQueue("pcl", maxSize=4, blocking=False)
+        q_depth = device.getOutputQueue("depth", maxSize=4, blocking=False)
+        q_rgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
+        queues = (q_pcl, q_depth, q_rgb)
+
+        if headless:
+            frame_num, total_points = run_headless(queues, num_frames, args.delay)
+        else:
+            frame_num, total_points = run_gui(device, queues)
+
+        print_results(frame_num, total_points)
+
 
 if __name__ == "__main__":
     main()
